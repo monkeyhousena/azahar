@@ -11,6 +11,7 @@
 #include "core/frontend/emu_window.h"
 #include "video_core/gpu.h"
 #include "video_core/pica/pica_core.h"
+#include "video_core/post_processing.h"
 #include "video_core/renderer_vulkan/renderer_vulkan.h"
 #include "video_core/renderer_vulkan/vk_memory_util.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
@@ -55,6 +56,85 @@ constexpr std::array<f32, 4 * 4> MakeOrthographicMatrix(u32 width, u32 height) {
             0.f,         0.f,          0.f,  1.f};
     // clang-format on
 }
+
+// Header prepended to user post-processing shaders. It provides the same interface as the
+// OpenGL renderer's Dolphin-compatible header, so the same .glsl files work on both backends.
+constexpr std::string_view VULKAN_PP_SHADER_HEADER = R"(#version 450 core
+#extension GL_ARB_separate_shader_objects : enable
+
+// hlsl to glsl types
+#define float2 vec2
+#define float3 vec3
+#define float4 vec4
+#define uint2 uvec2
+#define uint3 uvec3
+#define uint4 uvec4
+#define int2 ivec2
+#define int3 ivec3
+#define int4 ivec4
+
+// hlsl to glsl function translation
+#define frac fract
+#define lerp mix
+
+layout (location = 0) in vec2 frag_tex_coord;
+layout (location = 0) out vec4 color;
+
+layout (push_constant, std140) uniform DrawInfo {
+    mat4 modelview_matrix;
+    vec4 i_resolution;
+    vec4 o_resolution;
+    int screen_id_l;
+    int screen_id_r;
+    int layer;
+    int reverse_interlaced;
+};
+
+layout (set = 0, binding = 0) uniform sampler2D screen_textures[3];
+
+vec4 SampleScreen(int screen_id, vec2 location) {
+#ifdef ARRAY_DYNAMIC_INDEX
+    return texture(screen_textures[screen_id], location);
+#else
+    switch (screen_id) {
+    case 0:
+        return texture(screen_textures[0], location);
+    case 1:
+        return texture(screen_textures[1], location);
+    default:
+        return texture(screen_textures[2], location);
+    }
+#endif
+}
+
+#ifdef ARRAY_DYNAMIC_INDEX
+// Allows shaders that sample color_texture directly to work where the device supports it.
+#define color_texture screen_textures[screen_id_l]
+#define color_texture_r screen_textures[screen_id_r]
+#define SampleOffset(offset) textureOffset(screen_textures[screen_id_l], frag_tex_coord, offset)
+#else
+#define SampleOffset(offset) (screen_id_l == 0 ? textureOffset(screen_textures[0], frag_tex_coord, offset) : (screen_id_l == 1 ? textureOffset(screen_textures[1], frag_tex_coord, offset) : textureOffset(screen_textures[2], frag_tex_coord, offset)))
+#endif
+
+float4 Sample() { return SampleScreen(screen_id_l, frag_tex_coord); }
+float4 SampleLocation(float2 location) { return SampleScreen(screen_id_l, location); }
+float4 SampleLayer(int layer_index) {
+    return SampleScreen(layer_index == 0 ? screen_id_l : screen_id_r, frag_tex_coord);
+}
+
+float2 GetResolution() { return i_resolution.xy; }
+float2 GetInvResolution() { return i_resolution.zw; }
+float2 GetIResolution() { return i_resolution.xy; }
+float2 GetIInvResolution() { return i_resolution.zw; }
+float2 GetWindowResolution() { return o_resolution.xy; }
+float2 GetInvWindowResolution() { return o_resolution.zw; }
+float2 GetOResolution() { return o_resolution.xy; }
+float2 GetOInvResolution() { return o_resolution.zw; }
+float2 GetCoordinates() { return frag_tex_coord; }
+
+void SetOutput(float4 color_in) { color = color_in; }
+
+)";
 
 constexpr static std::array<vk::DescriptorSetLayoutBinding, 1> PRESENT_BINDINGS = {{
     {0, vk::DescriptorType::eCombinedImageSampler, 3, vk::ShaderStageFlagBits::eFragment},
@@ -133,6 +213,8 @@ RendererVulkan::RendererVulkan(Core::System& system, Pica::PicaCore& pica_,
         secondary_present_window_ptr = std::make_unique<PresentWindow>(
             *secondary_window, instance, scheduler, IsLowRefreshRate());
     }
+    // Load the configured present shader (including any post-processing shader) on first draw.
+    settings.shader_update_requested = true;
 }
 
 RendererVulkan::~RendererVulkan() {
@@ -141,6 +223,8 @@ RendererVulkan::~RendererVulkan() {
     main_present_window.WaitPresent();
     device.waitIdle();
 
+    device.destroyPipeline(custom_pipeline);
+    device.destroyShaderModule(custom_shader);
     device.destroyShaderModule(present_vertex_shader);
     for (u32 i = 0; i < PRESENT_PIPELINES; i++) {
         device.destroyPipeline(present_pipelines[i]);
@@ -196,7 +280,9 @@ void RendererVulkan::PrepareDraw(Frame* frame, const Layout::FramebufferLayout& 
     renderpass_cache.EndRendering();
     scheduler.Record([this, layout, frame, present_set,
                       renderpass = main_present_window.Renderpass(),
-                      index = current_pipeline](vk::CommandBuffer cmdbuf) {
+                      pipeline = use_custom_pipeline ? custom_pipeline
+                                                     : present_pipelines[current_pipeline]](
+                         vk::CommandBuffer cmdbuf) {
         const vk::Viewport viewport = {
             .x = 0.0f,
             .y = 0.0f,
@@ -229,7 +315,7 @@ void RendererVulkan::PrepareDraw(Frame* frame, const Layout::FramebufferLayout& 
         };
 
         cmdbuf.beginRenderPass(renderpass_begin_info, vk::SubpassContents::eInline);
-        cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, present_pipelines[index]);
+        cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
         cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, layout, 0, present_set, {});
     });
 }
@@ -356,7 +442,7 @@ void RendererVulkan::BuildLayouts() {
     cursor_pipeline_layout = instance.GetDevice().createPipelineLayoutUnique(cursor_layout_info);
 }
 
-void RendererVulkan::BuildPipelines() {
+vk::Pipeline RendererVulkan::BuildPresentPipeline(vk::ShaderModule fragment_shader) {
     const vk::VertexInputBindingDescription binding = {
         .binding = 0,
         .stride = sizeof(ScreenRectVertex),
@@ -450,39 +536,50 @@ void RendererVulkan::BuildPipelines() {
         .stencilTestEnable = false,
     };
 
-    for (u32 i = 0; i < PRESENT_PIPELINES; i++) {
-        const std::array shader_stages = {
-            vk::PipelineShaderStageCreateInfo{
-                .stage = vk::ShaderStageFlagBits::eVertex,
-                .module = present_vertex_shader,
-                .pName = "main",
-            },
-            vk::PipelineShaderStageCreateInfo{
-                .stage = vk::ShaderStageFlagBits::eFragment,
-                .module = present_shaders[i],
-                .pName = "main",
-            },
-        };
+    const std::array shader_stages = {
+        vk::PipelineShaderStageCreateInfo{
+            .stage = vk::ShaderStageFlagBits::eVertex,
+            .module = present_vertex_shader,
+            .pName = "main",
+        },
+        vk::PipelineShaderStageCreateInfo{
+            .stage = vk::ShaderStageFlagBits::eFragment,
+            .module = fragment_shader,
+            .pName = "main",
+        },
+    };
 
-        const vk::GraphicsPipelineCreateInfo pipeline_info = {
-            .stageCount = static_cast<u32>(shader_stages.size()),
-            .pStages = shader_stages.data(),
-            .pVertexInputState = &vertex_input_info,
-            .pInputAssemblyState = &input_assembly,
-            .pViewportState = &viewport_info,
-            .pRasterizationState = &raster_state,
-            .pMultisampleState = &multisampling,
-            .pDepthStencilState = &depth_info,
-            .pColorBlendState = &color_blending,
-            .pDynamicState = &dynamic_info,
-            .layout = *present_pipeline_layout,
-            .renderPass = main_present_window.Renderpass(),
-        };
+    const vk::GraphicsPipelineCreateInfo pipeline_info = {
+        .stageCount = static_cast<u32>(shader_stages.size()),
+        .pStages = shader_stages.data(),
+        .pVertexInputState = &vertex_input_info,
+        .pInputAssemblyState = &input_assembly,
+        .pViewportState = &viewport_info,
+        .pRasterizationState = &raster_state,
+        .pMultisampleState = &multisampling,
+        .pDepthStencilState = &depth_info,
+        .pColorBlendState = &color_blending,
+        .pDynamicState = &dynamic_info,
+        .layout = *present_pipeline_layout,
+        .renderPass = main_present_window.Renderpass(),
+    };
 
+    try {
         const auto [result, pipeline] =
             instance.GetDevice().createGraphicsPipeline({}, pipeline_info);
-        ASSERT_MSG(result == vk::Result::eSuccess, "Unable to build present pipelines");
-        present_pipelines[i] = pipeline;
+        if (result == vk::Result::eSuccess) {
+            return pipeline;
+        }
+    } catch (vk::SystemError& err) {
+        LOG_ERROR(Render_Vulkan, "Failed to create present pipeline: {}", err.what());
+    }
+    return {};
+}
+
+void RendererVulkan::BuildPipelines() {
+    for (u32 i = 0; i < PRESENT_PIPELINES; i++) {
+        present_pipelines[i] = BuildPresentPipeline(present_shaders[i]);
+        ASSERT_MSG(present_pipelines[i], "Unable to build present pipelines");
     }
 
     // Build cursor pipeline (simple position-only, inverted color blending)
@@ -742,6 +839,75 @@ void RendererVulkan::ReloadPipeline(Settings::StereoRenderOption render_3d) {
         current_pipeline = 0;
         break;
     }
+
+    // Interlaced modes only have a builtin shader, like the OpenGL renderer.
+    if (current_pipeline == 2) {
+        use_custom_pipeline = false;
+        return;
+    }
+
+    const bool anaglyph = current_pipeline == 1;
+    const std::string shader_name = anaglyph ? Settings::values.anaglyph_shader_name.GetValue()
+                                             : Settings::values.pp_shader_name.GetValue();
+    const bool is_builtin =
+        shader_name.empty() || shader_name.ends_with("(builtin)");
+    if (is_builtin) {
+        use_custom_pipeline = false;
+        return;
+    }
+
+    UpdateCustomShader(anaglyph, shader_name);
+    use_custom_pipeline = static_cast<bool>(custom_pipeline);
+}
+
+void RendererVulkan::DestroyCustomShader() {
+    if (!custom_pipeline && !custom_shader) {
+        return;
+    }
+    // The pipeline may still be referenced by in-flight command buffers.
+    scheduler.Finish();
+    const vk::Device device = instance.GetDevice();
+    device.destroyPipeline(custom_pipeline);
+    device.destroyShaderModule(custom_shader);
+    custom_pipeline = vk::Pipeline{};
+    custom_shader = vk::ShaderModule{};
+}
+
+void RendererVulkan::UpdateCustomShader(bool anaglyph, const std::string& shader_name) {
+    // Always reload so edits to the shader file are picked up when settings are applied.
+    DestroyCustomShader();
+    custom_shader_name = shader_name;
+    custom_shader_anaglyph = anaglyph;
+
+    const std::string source = VideoCore::LoadPostProcessingShaderSource(anaglyph, shader_name);
+    if (source.empty()) {
+        LOG_ERROR(Render_Vulkan, "Unable to load post-processing shader \"{}\"", shader_name);
+        return;
+    }
+
+    const std::string code = std::string{VULKAN_PP_SHADER_HEADER} + source;
+    const std::string_view preamble =
+        instance.IsImageArrayDynamicIndexSupported() ? "#define ARRAY_DYNAMIC_INDEX\n" : "";
+    const std::vector<u32> spirv =
+        CompileGLSL(code, vk::ShaderStageFlagBits::eFragment, preamble);
+    if (spirv.empty()) {
+        LOG_ERROR(Render_Vulkan, "Unable to compile post-processing shader \"{}\"", shader_name);
+        return;
+    }
+
+    custom_shader = CompileSPV(spirv, instance.GetDevice());
+    if (!custom_shader) {
+        return;
+    }
+    custom_pipeline = BuildPresentPipeline(custom_shader);
+    if (!custom_pipeline) {
+        LOG_ERROR(Render_Vulkan, "Unable to build pipeline for post-processing shader \"{}\"",
+                  shader_name);
+        instance.GetDevice().destroyShaderModule(custom_shader);
+        custom_shader = vk::ShaderModule{};
+        return;
+    }
+    LOG_INFO(Render_Vulkan, "Loaded post-processing shader \"{}\"", shader_name);
 }
 
 void RendererVulkan::DrawSingleScreen(u32 screen_id, float x, float y, float w, float h,

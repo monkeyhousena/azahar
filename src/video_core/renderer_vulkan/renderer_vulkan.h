@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <string>
+
 #include "common/common_types.h"
 #include "common/math_util.h"
 #include "video_core/renderer_base.h"
@@ -88,6 +90,9 @@ private:
     void CompileShaders();
     void BuildLayouts();
     void BuildPipelines();
+    vk::Pipeline BuildPresentPipeline(vk::ShaderModule fragment_shader);
+    void UpdateCustomShader(bool anaglyph, const std::string& shader_name);
+    void DestroyCustomShader();
     void ConfigureFramebufferTexture(TextureInfo& texture,
                                      const Pica::FramebufferConfig& framebuffer);
     void ConfigureRenderPipeline();
@@ -142,6 +147,13 @@ private:
     std::array<vk::Sampler, 2> present_samplers;
     vk::ShaderModule present_vertex_shader;
     u32 current_pipeline = 0;
+
+    // User-provided post-processing / anaglyph shader loaded from the shaders directory.
+    vk::Pipeline custom_pipeline{};
+    vk::ShaderModule custom_shader{};
+    std::string custom_shader_name;
+    bool custom_shader_anaglyph = false;
+    bool use_custom_pipeline = false;
 
     std::array<ScreenInfo, 3> screen_infos{};
     PresentUniformData draw_info{};

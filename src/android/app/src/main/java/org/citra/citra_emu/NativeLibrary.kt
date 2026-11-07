@@ -129,6 +129,12 @@ object NativeLibrary {
 
     external fun reloadSettings()
 
+    /**
+     * Returns the names of the .glsl shaders in the user's shaders directory
+     * (or shaders/anaglyph when [anaglyph] is true), without file extensions.
+     */
+    external fun getPostProcessingShaderList(anaglyph: Boolean): Array<String>
+
     external fun getTitleId(filename: String): Long
 
     external fun getIsSystemTitle(path: String): Boolean

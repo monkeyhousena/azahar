@@ -54,6 +54,7 @@
 #include "jni/camera/still_image_camera.h"
 #include "jni/config.h"
 #include "network/announce_multiplayer_session.h"
+#include "video_core/post_processing.h"
 
 #ifdef ENABLE_OPENGL
 #include "jni/emu_window/emu_window_gl.h"
@@ -777,6 +778,20 @@ jobjectArray Java_org_citra_citra_1emu_NativeLibrary_getInstalledGamePathsImpl(
     for (jsize i = 0; i < games.size(); ++i)
         env->SetObjectArrayElement(jgames, i, env->NewStringUTF(games[i].c_str()));
     return jgames;
+}
+
+jobjectArray Java_org_citra_citra_1emu_NativeLibrary_getPostProcessingShaderList(
+    JNIEnv* env, [[maybe_unused]] jobject obj, jboolean anaglyph) {
+    const std::vector<std::string> shaders =
+        VideoCore::GetPostProcessingShaderList(anaglyph == JNI_TRUE);
+    jobjectArray jshaders = env->NewObjectArray(static_cast<jsize>(shaders.size()),
+                                                env->FindClass("java/lang/String"), nullptr);
+    for (jsize i = 0; i < static_cast<jsize>(shaders.size()); ++i) {
+        jstring jname = env->NewStringUTF(shaders[i].c_str());
+        env->SetObjectArrayElement(jshaders, i, jname);
+        env->DeleteLocalRef(jname);
+    }
+    return jshaders;
 }
 
 jlongArray Java_org_citra_citra_1emu_NativeLibrary_getSystemTitleIds(JNIEnv* env,

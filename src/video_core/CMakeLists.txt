@@ -14,6 +14,8 @@ add_library(video_core STATIC EXCLUDE_FROM_ALL
     gpu_debugger.h
     gpu_impl.h
     pica_types.h
+    post_processing.cpp
+    post_processing.h
     precompiled_headers.h
     rasterizer_accelerated.cpp
     rasterizer_accelerated.h

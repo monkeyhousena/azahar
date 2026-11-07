@@ -279,6 +279,10 @@
     <string name="async_shaders_description">Compiles shaders in the background to reduce stuttering during gameplay. When enabled expect temporary graphical glitches</string>
     <string name="linear_filtering">Linear Filtering</string>
     <string name="linear_filtering_description">Enables linear filtering, which causes game visuals to appear smoother.</string>
+    <string name="post_processing_shader">Post-Processing Shader</string>
+    <string name="post_processing_shader_description">Applies a .glsl shader from the \"shaders\" folder in the Azahar user directory to the final image. Works with both Vulkan and OpenGL ES.</string>
+    <string name="anaglyph_shader">Anaglyph Shader</string>
+    <string name="anaglyph_shader_description">Shader used for anaglyph 3D. Custom shaders are loaded from the \"shaders/anaglyph\" folder in the Azahar user directory.</string>
     <string name="use_integer_scaling">Integer Scaling</string>
     <string name="use_integer_scaling_description">Scales the screens with an integer multiplier of the original 3DS screen. For layouts with two different screen sizes, the largest screen is integer-scaled.</string>
     <string name="texture_filter_name">Texture Filter</string>

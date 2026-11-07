@@ -18,6 +18,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlin.math.roundToInt
 import org.citra.citra_emu.BuildConfig
 import org.citra.citra_emu.CitraApplication
+import org.citra.citra_emu.NativeLibrary
 import org.citra.citra_emu.R
 import org.citra.citra_emu.display.ScreenLayout
 import org.citra.citra_emu.display.StereoMode
@@ -1016,6 +1017,28 @@ class SettingsFragmentPresenter(
                     IntSetting.TEXTURE_FILTER.defaultValue
                 )
             )
+            val stereoActive = editingSettings.get(IntSetting.RENDER_3D_WHICH_DISPLAY) !=
+                StereoWhichDisplay.NONE.int
+            val stereoMode = editingSettings.get(IntSetting.STEREOSCOPIC_3D_MODE)
+            val ppShaderNames = arrayOf(PP_SHADER_BUILTIN) +
+                NativeLibrary.getPostProcessingShaderList(false)
+            add(
+                StringSingleChoiceSetting(
+                    editingSettings,
+                    StringSetting.PP_SHADER_NAME,
+                    R.string.post_processing_shader,
+                    R.string.post_processing_shader_description,
+                    ppShaderNames,
+                    ppShaderNames,
+                    StringSetting.PP_SHADER_NAME.key,
+                    StringSetting.PP_SHADER_NAME.defaultValue,
+                    isEnabled = !stereoActive || (
+                        stereoMode != StereoMode.ANAGLYPH.int &&
+                            stereoMode != StereoMode.INTERLACED.int &&
+                            stereoMode != StereoMode.REVERSE_INTERLACED.int
+                        )
+                )
+            )
             add(
                 SliderSetting(
                     editingSettings,
@@ -1056,6 +1079,25 @@ class SettingsFragmentPresenter(
                     isEnabled =
                         editingSettings.get(IntSetting.RENDER_3D_WHICH_DISPLAY) !=
                             StereoWhichDisplay.NONE.int
+                )
+            )
+
+            val anaglyphShaderNames = arrayOf(ANAGLYPH_SHADER_BUILTIN) +
+                NativeLibrary.getPostProcessingShaderList(true)
+            add(
+                StringSingleChoiceSetting(
+                    editingSettings,
+                    StringSetting.ANAGLYPH_SHADER_NAME,
+                    R.string.anaglyph_shader,
+                    R.string.anaglyph_shader_description,
+                    anaglyphShaderNames,
+                    anaglyphShaderNames,
+                    StringSetting.ANAGLYPH_SHADER_NAME.key,
+                    StringSetting.ANAGLYPH_SHADER_NAME.defaultValue,
+                    isEnabled = editingSettings.get(IntSetting.RENDER_3D_WHICH_DISPLAY) !=
+                        StereoWhichDisplay.NONE.int &&
+                        editingSettings.get(IntSetting.STEREOSCOPIC_3D_MODE) ==
+                        StereoMode.ANAGLYPH.int
                 )
             )
 
@@ -2096,5 +2138,11 @@ class SettingsFragmentPresenter(
                 )
             )
         }
+    }
+
+    companion object {
+        // Must match the builtin names used by the native renderers.
+        private const val PP_SHADER_BUILTIN = "None (builtin)"
+        private const val ANAGLYPH_SHADER_BUILTIN = "Dubois (builtin)"
     }
 }
