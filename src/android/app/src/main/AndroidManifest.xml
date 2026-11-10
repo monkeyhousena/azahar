@@ -30,6 +30,8 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
 
@@ -64,6 +66,15 @@
             android:configChanges="orientation|screenSize|uiMode"
             android:theme="@style/Theme.Citra.Main"
             android:label="@string/preferences_settings"/>
+
+        <service
+            android:name="org.citra.citra_emu.utils.EmulationKeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps a paused game session alive while the device sleeps" />
+        </service>
 
         <activity
             android:name="org.citra.citra_emu.activities.EmulationActivity"

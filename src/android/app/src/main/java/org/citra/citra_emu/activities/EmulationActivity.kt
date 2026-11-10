@@ -51,6 +51,7 @@ import org.citra.citra_emu.ui.main.MainActivity
 import org.citra.citra_emu.utils.BuildUtil
 import org.citra.citra_emu.utils.CitraDirectoryUtils
 import org.citra.citra_emu.utils.DirectoryInitialization
+import org.citra.citra_emu.utils.EmulationKeepAliveService
 import org.citra.citra_emu.utils.EmulationLifecycleUtil
 import org.citra.citra_emu.utils.EmulationMenuSettings
 import org.citra.citra_emu.utils.FileBrowserHelper
@@ -273,6 +274,8 @@ class EmulationActivity : AppCompatActivity() {
     // onWindowFocusChanged to prevent the unwanted status bar state.
     override fun onResume() {
         enableFullscreenImmersive()
+        // Keep the app alive while the device sleeps so the paused game isn't lost.
+        EmulationKeepAliveService.start(this)
         if (isEmulationReady) {
             // If emulation is ready then unblock rotation
             isRotationBlocked = false
@@ -330,6 +333,7 @@ class EmulationActivity : AppCompatActivity() {
         secondaryDisplayManager.releaseVD()
 
         if (isFinishing) {
+            EmulationKeepAliveService.stop(this)
             CitraSettings.activeSettings.changeToGlobalContext()
             processGame = null
             NativeLibrary.stopEmulation()
